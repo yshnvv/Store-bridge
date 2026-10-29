@@ -33,10 +33,16 @@ export class OzonApiService {
 
   private headers() {
     return {
-      'Client-Id': this.clientId,
+      'Client-Id': this.clientIdHeader,
       'Api-Key': this.apiKey,
       'Content-Type': 'application/json',
     };
+  }
+
+  private get clientIdHeader(): string {
+    // Ozon expects Client-Id as a positive integer
+    const id = parseInt(this.clientId, 10);
+    return isNaN(id) ? this.clientId : String(id);
   }
 
   private async request(path: string, body?: unknown): Promise<any> {
@@ -74,7 +80,7 @@ export class OzonApiService {
   }
 
   async listProducts(): Promise<any> {
-    return this.request('/v4/product/info', {
+    return this.request('/v3/product/list', {
       filter: { visibility: 'ALL' },
       last_id: '',
       limit: 1000,

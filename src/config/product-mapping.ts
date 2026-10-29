@@ -19,4 +19,18 @@ export interface FazercardsProductConfig {
 
   /** Human-readable name for logs */
   label?: string;
+
+  /* ── Catalog snapshot, refreshed on every sync ── */
+
+  /** Catalog item id: `<categoryId>:<cardId>` or `<gameId>:<keyId>` */
+  catalogId?: string;
+
+  /** Product name as returned by the FazerCards catalog */
+  name?: string;
+
+  /** Price per unit in USD, exactly as reported by FazerCards */
+  priceUsd?: string;
+
+  /** Units in stock at the time of the last sync */
+  stock?: number;
 }

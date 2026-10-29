@@ -69,7 +69,7 @@ export class MappingRepository {
       .exec();
 
     this.logger.log(
-      `Mapping saved: ${ozonOfferId} → ${config.label ?? '(no label)'}`,
+      `Mapping saved: ${ozonOfferId} → ${config.name ?? config.label ?? '(no label)'}`,
     );
 
     return {

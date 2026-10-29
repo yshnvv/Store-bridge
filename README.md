@@ -13,6 +13,7 @@ One NestJS backend that receives webhooks from **two platforms** and implements 
 | `GET /admin/catalog/mapping` | Admin | View Ozon→FazerCards mappings |
 | `POST /admin/catalog/mapping` | Admin | Create/update a mapping |
 | `DELETE /admin/catalog/mapping/:ozonOfferId` | Admin | Delete a mapping |
+| `POST /admin/catalog/sync` | Admin | Pull catalogs from Ozon + FazerCards, auto-match, store in MongoDB |
 
 ## Auto-fulfillment flow (Ozon → FazerCards → buyer)
 
@@ -35,21 +36,75 @@ Every step is recorded in MongoDB (`product_mappings` collection for mappings; i
 Instead of hardcoding `PRODUCT_MAPPING`, you now:
 
 1. **Fetch live catalogs** from both platforms via admin endpoints
-2. **Create mappings** in MongoDB via `POST /admin/catalog/mapping`
-3. **Fulfillment looks up** the mapping from MongoDB at runtime
+2. **Auto-match products by name** via `POST /admin/catalog/sync`
+3. **Mappings stored in MongoDB** (`product_mappings` collection)
 
-Example mapping payload:
+### Sync endpoint: `POST /admin/catalog/sync`
+
+Pulls articles/products from Ozon and FazerCards, auto-matches them by name, and stores the mappings in MongoDB.
+
+**Request body:**
 ```json
 {
-  "ozonOfferId": "STEAM_WALLET_100",
-  "fazercardsConfig": {
-    "type": "topup",
-    "gameId": "steam_wallet",
-    "quantity": 1,
-    "label": "Steam Wallet 100"
-  }
+  "matchStrategy": "name",   // "name" (keyword overlap) | "exact" (exact name match) | "none" (no match)
+  "limit": 100,              // max Ozon products to process (default: 100)
+  "dryRun": false            // preview without saving to DB (default: false)
 }
 ```
+
+**Matching strategies:**
+- `name`: Extracts keywords from Ozon product names, scores FazerCards products by keyword overlap, picks the best match
+- `exact`: Only matches if Ozon name == FazerCards name (case-insensitive)
+- `none`: Returns all Ozon products as unmatched
+
+**Example response:**
+```json
+{
+  "totalOzonProducts": 150,
+  "totalFzrProducts": 85,
+  "synced": 23,
+  "matched": 23,
+  "unmatched": 127,
+  "skipped": 0,
+  "mappings": [
+    {
+      "ozonOfferId": "STEAM_WALLET_100",
+      "ozonProductName": "Steam Wallet 100 RUB",
+      "fazercardsConfig": {
+        "type": "topup",
+        "gameId": "steam_wallet",
+        "quantity": 1,
+        "label": "Steam Wallet 100"
+      },
+      "matchStrategy": "name",
+      "matchScore": 12,
+      "matchedFzrProductName": "Steam Wallet 100",
+      "saved": true
+    }
+  ],
+  "errors": []
+}
+```
+
+### How to use
+
+1. Start the server: `npm run start:dev`
+2. Dry run first (preview matches without saving):
+   ```bash
+   curl -X POST http://localhost:3000/admin/catalog/sync \
+     -H "Content-Type: application/json" \
+     -d '{"matchStrategy":"name","limit":50,"dryRun":true}'
+   ```
+3. Run for real (saves to MongoDB Atlas):
+   ```bash
+   curl -X POST http://localhost:3000/admin/catalog/sync \
+     -H "Content-Type: application/json" \
+     -d '{"matchStrategy":"name","limit":100,"dryRun":false}'
+   ```
+4. View saved mappings:
+   ```bash
+   curl http://localhost:3000/admin/catalog/mapping
+   ```
 
 ## MongoDB setup
 
@@ -60,7 +115,8 @@ You need a running MongoDB instance. Options:
 
 Set `MONGO_URI` in `.env`:
 ```
-MONGO_URI=mongodb://localhost:27017/fazercards_webhook
+MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/<dbname>?retryWrites=true&w=majority
+MONGO_DATABASE=fazercards_webhook
 ```
 
 On startup, NestJS connects to MongoDB and ensures the `product_mappings` collection exists.

@@ -6,7 +6,7 @@ import { OzonModule } from './ozon/ozon.module';
 import { FzrModule } from './fazercards/fazercards.module';
 import { FulfillmentModule } from './fulfillment/fulfillment.module';
 import { CatalogModule } from './catalog/catalog.module';
-
+import { CatalogSyncModule } from './catalog/sync/sync.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -25,6 +25,7 @@ import { CatalogModule } from './catalog/catalog.module';
     FzrModule,
     FulfillmentModule,
     CatalogModule,
+    CatalogSyncModule,
   ],
 })
 export class AppModule {}

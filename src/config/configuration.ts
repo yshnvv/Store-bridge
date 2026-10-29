@@ -4,6 +4,7 @@ export default registerAs('app', () => ({
   port: parseInt(process.env.PORT ?? '3000', 10),
   publicBaseUrl: process.env.PUBLIC_BASE_URL ?? '',
   mongoUri: process.env.MONGO_URI ?? 'mongodb://localhost:27017/fazercards_webhook',
+  mongoDatabase: process.env.MONGODB_DATABASE ?? 'fazercards_webhook',
 
   // Ozon
   ozonClientId: process.env.OZON_CLIENT_ID ?? '',
