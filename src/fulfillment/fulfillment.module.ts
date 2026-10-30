@@ -4,17 +4,16 @@ import { FulfillmentService } from './fulfillment.service';
 import { FulfillmentController } from './fulfillment.controller';
 import { FulfillmentStore, fulfillmentStore } from './fulfillment.store';
 import { OzonApiService } from '../ozon/ozon-api.service';
-import { FazerCardsBuyService } from '../fazercards/fazercards-buy.service';
 import { MappingModule } from '../catalog/mapping/mapping.module';
+import { SuppliersModule } from '../suppliers/suppliers.module';
 
 @Module({
-  imports: [ConfigModule, MappingModule],
+  imports: [ConfigModule, MappingModule, SuppliersModule],
   controllers: [FulfillmentController],
   providers: [
     { provide: FulfillmentStore, useValue: fulfillmentStore },
     FulfillmentService,
     OzonApiService,
-    FazerCardsBuyService,
   ],
   exports: [FulfillmentService],
 })

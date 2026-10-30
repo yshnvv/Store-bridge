@@ -305,6 +305,100 @@ export class CatalogService {
 		}
 	}
 
+	/**
+	 * FazerCards account order history — the articles you already bought.
+	 *
+	 * Walks completed orders and extracts the delivered product from each:
+	 *   - gift_card  → category_id + card_id
+	 *   - topup      → category_id + offer_id
+	 *   - game_key   → key_id (note: OrderResource does not carry game_id, so
+	 *                  gameId will be undefined; complete it in the admin UI)
+	 *
+	 * This is the fast path for sync: no catalog walk, only your own orders.
+	 */
+	async getFzrPurchasedItems(
+		options: { maxOrders?: number } = {},
+	): Promise<FazercardsCatalogItem[]> {
+		const fz = this.fzrService.getClient();
+		const items: FazercardsCatalogItem[] = [];
+		const seen = new Set<string>();
+		let ordersScanned = 0;
+
+		for await (const order of fz.orders.iterAll({ limit: 50 })) {
+			ordersScanned++;
+			if (ordersScanned > (options.maxOrders ?? 500)) break;
+
+			// Only delivered orders represent a purchased article.
+			if (order.status !== 'completed') continue;
+
+			const dedupeKey = `${order.kind}:${order.category_id ?? ''}:${order.card_id ?? ''}:${order.key_id ?? ''}:${order.offer_id ?? ''}`;
+			if (seen.has(dedupeKey)) continue;
+			seen.add(dedupeKey);
+
+			let type: FazercardsCatalogItem['type'];
+			let categoryId: string | undefined;
+			let cardId: string | undefined;
+			let gameId: string | undefined;
+			let keyId: string | undefined;
+			let offerId: string | undefined;
+			let name: string | undefined;
+
+			switch (order.kind) {
+				case 'gift_card':
+					type = 'giftcard';
+					categoryId = order.category_id;
+					cardId = order.card_id;
+					name =
+						order.title ??
+						order.offer_name ??
+						order.category_name ??
+						order.id;
+					break;
+				case 'topup':
+					type = 'topup';
+					categoryId = order.category_id;
+					offerId = order.offer_id;
+					name =
+						order.title ??
+						order.offer_name ??
+						order.category_name ??
+						order.id;
+					break;
+				case 'game_key':
+					type = 'gamekey';
+					keyId = order.key_id;
+					// OrderResource does not carry game_id — left undefined.
+					name = order.title ?? order.offer_name ?? order.id;
+					break;
+				default:
+					continue;
+			}
+
+			const catalogId =
+				type === 'topup'
+					? `${categoryId}:${offerId ?? order.id}`
+					: type === 'gamekey'
+						? `${gameId ?? order.id}:${keyId ?? order.id}`
+						: `${categoryId}:${cardId ?? order.id}`;
+
+			items.push({
+				type,
+				id: catalogId,
+				name,
+				categoryId,
+				cardId,
+				gameId,
+				keyId,
+				raw: { order },
+			});
+		}
+
+		this.logger.log(
+			`Fetched ${items.length} FazerCards purchased articles from ${ordersScanned} orders`,
+		);
+		return items;
+	}
+
 	/** Walk a cursor-paginated listing, pacing requests against the rate limit. */
 	private async collectPaged<T>(
 		fetchPage: (query: { limit: number; cursor?: string }) => Promise<{

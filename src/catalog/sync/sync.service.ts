@@ -1,29 +1,29 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { MappingService } from "../mapping/mapping.service";
+import { SupplierFactory } from "../../suppliers/supplier.factory";
+import { SupplierType } from "../../suppliers/supplier.interface";
 import {
 	SyncOptions,
 	SyncResult,
 	SyncMappingResult,
 	SyncError,
-	FazercardsProductConfigForSync,
+	DigitalProductConfigForSync,
 	MatchStrategy,
-	FzrProductWithScore,
+	ProductWithScore,
 } from "./sync.dto";
-import {
-	CatalogService,
-	FazercardsCatalogItem,
-	OzonProductSummary,
-} from "../catalog.service";
+import { CatalogService, OzonProductSummary } from "../catalog.service";
 
 /**
- * Sync service: pulls catalogs from Ozon and FazerCards, auto-matches
- * products by name, and stores mappings in MongoDB.
+ * Sync service: pulls Ozon products, matches them against supplier catalog
+ * articles, and stores the mappings in MongoDB.
+ *
+ * By default the sync only considers articles you have already bought from
+ * the configured supplier (order history) — fast, no full catalog walk.
  *
  * Matching logic:
- *   - 'exact': Ozon product name == FazerCards product name (case-insensitive, trimmed)
- *   - 'name': keyword overlap — extract keywords from Ozon name, count how many
- *     appear in each FazerCards product name, pick the best match
- *   - 'none': no auto-matching, returns all Ozon products as unmatched
+ *   - 'exact': Ozon product name == supplier product name
+ *   - 'name': keyword overlap — pick the best match
+ *   - 'none': no auto-matching
  */
 @Injectable()
 export class CatalogSyncService {
@@ -32,22 +32,24 @@ export class CatalogSyncService {
 	constructor(
 		private readonly mapping: MappingService,
 		private readonly catalog: CatalogService,
+		private readonly supplierFactory: SupplierFactory,
 	) {}
 
 	/**
-	 * Full sync: fetch both catalogs, match, and upsert mappings to MongoDB.
+	 * Full sync: fetch Ozon products, match against supplier candidates,
+	 * and upsert mappings to MongoDB.
 	 */
 	async sync(options: SyncOptions = {}): Promise<SyncResult> {
 		const matchStrategy = options.matchStrategy ?? "name";
 		const limit = options.limit ?? 100;
 		const dryRun = options.dryRun ?? false;
+		const supplierType = options.supplier ?? SupplierType.FAZERCARDS;
 
 		this.logger.log(
-			`Starting catalog sync: strategy=${matchStrategy}, limit=${limit}, dryRun=${dryRun}`,
+			`Starting catalog sync: supplier=${supplierType}, strategy=${matchStrategy}, limit=${limit}, dryRun=${dryRun}`,
 		);
 
-		// 1. Fetch Ozon products (shared with the admin catalog UI, so both see
-		// the same list, including any test fixtures).
+		// 1. Fetch Ozon products (shared with the admin catalog UI).
 		let ozonProducts: OzonProductSummary[] = [];
 		try {
 			ozonProducts = await this.catalog.getOzonProducts();
@@ -55,7 +57,7 @@ export class CatalogSyncService {
 			this.logger.error("Failed to fetch Ozon catalog", (err as Error)?.stack);
 			return {
 				totalOzonProducts: 0,
-				totalFzrProducts: 0,
+				totalSupplierProducts: 0,
 				synced: 0,
 				matched: 0,
 				unmatched: 0,
@@ -67,44 +69,35 @@ export class CatalogSyncService {
 			};
 		}
 
-		console.log(`Fetched ${ozonProducts.length} Ozon products.`);
-		// 2. Fetch all FazerCards catalogs.
-		// Only categories/games whose name appears in an Ozon product name are
-		// fetched — the rest could never be matched and each one costs an API call.
-		let fzrProducts: FazercardsCatalogItem[] = [];
+		// 2. Build the supplier candidate list from order history.
+		let supplierProducts: DigitalProductConfigForSync[] = [];
 		try {
-			const sources = options.sources ?? ["giftcards", "gamekeys", "topups"];
-			const nameFilter = options.fullCatalog
-				? undefined
-				: this.buildParentMatcher(ozonProducts.map((p) => p.name ?? ""));
-
+			const supplier = this.supplierFactory.get(supplierType);
+			const catalog = await supplier.fetchCatalog({
+				maxOrders: options.maxOrders ?? 500,
+			});
+			supplierProducts = catalog.map((item) => ({
+				supplier: item.supplier,
+				type: item.type ?? '',
+				catalogId: item.id,
+				name: item.name,
+				priceUsd: item.priceUsd,
+				stock: item.stock,
+				config: item.config,
+				quantity: 1,
+				label: item.name ?? item.id,
+			}));
 			this.logger.log(
-				`Fetching FazerCards catalog: sources=${sources.join(",")}, filter=${nameFilter ? "ozon-names" : "off"}`,
+				`Using ${supplierProducts.length} purchased articles from supplier '${supplierType}' order history`,
 			);
-
-			const [giftcards, gamekeys, topups] = await Promise.all([
-				sources.includes("giftcards")
-					? this.catalog.getFzrGiftcards({ nameFilter })
-					: Promise.resolve([]),
-				sources.includes("gamekeys")
-					? this.catalog.getFzrGameKeys({ nameFilter })
-					: Promise.resolve([]),
-				sources.includes("topups")
-					? this.catalog.getFzrTopups({ nameFilter })
-					: Promise.resolve([]),
-			]);
-
-			fzrProducts = [...giftcards, ...gamekeys, ...topups];
-
-			console.log(fzrProducts);
 		} catch (err) {
 			this.logger.error(
-				"Failed to fetch FazerCards catalog",
+				"Failed to build supplier candidate list",
 				(err as Error)?.stack,
 			);
 			return {
 				totalOzonProducts: ozonProducts.length,
-				totalFzrProducts: 0,
+				totalSupplierProducts: 0,
 				synced: 0,
 				matched: 0,
 				unmatched: ozonProducts.length,
@@ -112,14 +105,14 @@ export class CatalogSyncService {
 				mappings: [],
 				errors: [
 					{
-						message: `FazerCards catalog fetch failed: ${(err as Error)?.message}`,
+						message: `Supplier candidate list failed: ${(err as Error)?.message}`,
 					},
 				],
 			};
 		}
 
-		console.log(
-			`Fetched ${ozonProducts.length} Ozon products and ${fzrProducts.length} FazerCards products.`,
+		this.logger.log(
+			`Fetched ${ozonProducts.length} Ozon products and ${supplierProducts.length} supplier candidates.`,
 		);
 
 		// 3. Limit Ozon products
@@ -143,17 +136,17 @@ export class CatalogSyncService {
 				continue;
 			}
 
-			let match: FzrProductWithScore | undefined;
+			let match: ProductWithScore | undefined;
 
 			if (matchStrategy === "exact") {
-				match = this.matchExact(name, fzrProducts);
+				match = this.matchExact(name, supplierProducts);
 			} else if (matchStrategy === "name") {
-				match = this.matchByName(name, fzrProducts);
+				match = this.matchByName(name, supplierProducts);
 			}
 
 			if (match) {
 				matched++;
-				const config = this.buildFzrConfig(match.product);
+				const config = this.buildSupplierConfig(match.product);
 				const result: SyncMappingResult = {
 					ozonOfferId: offerId,
 					ozonProductName: name,
@@ -196,7 +189,7 @@ export class CatalogSyncService {
 
 		return {
 			totalOzonProducts: ozonProducts.length,
-			totalFzrProducts: fzrProducts.length,
+			totalSupplierProducts: supplierProducts.length,
 			synced,
 			matched,
 			unmatched,
@@ -207,12 +200,12 @@ export class CatalogSyncService {
 	}
 
 	/**
-	 * Exact match: Ozon name equals FazerCards name (case-insensitive, trimmed).
+	 * Exact match: Ozon name equals supplier product name (case-insensitive, trimmed).
 	 */
 	private matchExact(
 		ozonName: string,
-		products: FazercardsCatalogItem[],
-	): FzrProductWithScore | undefined {
+		products: DigitalProductConfigForSync[],
+	): ProductWithScore | undefined {
 		const normalized = ozonName.trim().toLowerCase();
 		for (const p of products) {
 			const pName = (p.name ?? "").trim().toLowerCase();
@@ -224,17 +217,17 @@ export class CatalogSyncService {
 	}
 
 	/**
-	 * Keyword overlap match: extract keywords from Ozon name, score each FazerCards
+	 * Keyword overlap match: extract keywords from Ozon name, score each supplier
 	 * product by how many keywords appear in its name.
 	 */
 	private matchByName(
 		ozonName: string,
-		products: FazercardsCatalogItem[],
-	): FzrProductWithScore | undefined {
+		products: DigitalProductConfigForSync[],
+	): ProductWithScore | undefined {
 		const keywords = this.extractKeywords(ozonName);
 		if (keywords.length === 0) return undefined;
 
-		let best: FzrProductWithScore | undefined;
+		let best: ProductWithScore | undefined;
 
 		for (const p of products) {
 			const pName = (p.name ?? "").toLowerCase();
@@ -249,7 +242,7 @@ export class CatalogSyncService {
 			}
 
 			if (matched.length > 0) {
-				const candidate: FzrProductWithScore = {
+				const candidate: ProductWithScore = {
 					product: p,
 					score,
 					matchedKeywords: matched,
@@ -261,52 +254,6 @@ export class CatalogSyncService {
 		}
 
 		return best;
-	}
-
-	/**
-	 * Build a predicate that keeps only FazerCards categories/games that can
-	 * plausibly match an Ozon product. This is what makes the sync fast: it
-	 * avoids fetching offers for the hundreds of games we don't sell.
-	 *
-	 * Only alphabetic words are used (length >= 3), so denominations like
-	 * "1000" or "RUB" don't match a category name. Words also match with a
-	 * small edit distance, because Ozon names use the currency/product word
-	 * while FazerCards uses the brand: "4500 Robux" → category "Roblox".
-	 */
-	private buildParentMatcher(
-		ozonNames: string[],
-	): ((parentName: string) => boolean) | undefined {
-		const tokens = new Set<string>();
-		for (const name of ozonNames) {
-			for (const kw of this.extractKeywords(name)) {
-				if (/^\p{L}{3,}$/u.test(kw)) tokens.add(kw);
-			}
-		}
-
-		if (tokens.size === 0) {
-			this.logger.warn(
-				"No usable words in Ozon product names; FazerCards catalog filtering is disabled",
-			);
-			return undefined;
-		}
-
-		const needles = [...tokens];
-
-		return (parentName: string): boolean => {
-			const words = this.extractKeywords(parentName);
-			for (const word of words) {
-				for (const needle of needles) {
-					if (
-						word.includes(needle) ||
-						needle.includes(word) ||
-						isNearWord(needle, word)
-					) {
-						return true;
-					}
-				}
-			}
-			return false;
-		};
 	}
 
 	/**
@@ -327,73 +274,21 @@ export class CatalogSyncService {
 	}
 
 	/**
-	 * Convert a FazerCards catalog item into a FazercardsProductConfigForSync.
+	 * Convert a supplier catalog item into a DigitalProductConfigForSync.
 	 */
-	private buildFzrConfig(
-		p: FazercardsCatalogItem,
-	): FazercardsProductConfigForSync {
-		const config: FazercardsProductConfigForSync = {
+	private buildSupplierConfig(
+		p: DigitalProductConfigForSync,
+	): DigitalProductConfigForSync {
+		return {
+			supplier: p.supplier ?? SupplierType.FAZERCARDS,
 			type: p.type,
-			quantity: 1,
-			label: p.name ?? p.id,
-			catalogId: p.id,
+			quantity: p.quantity ?? 1,
+			label: p.label ?? p.name ?? p.catalogId,
+			catalogId: p.catalogId,
 			name: p.name,
 			priceUsd: p.priceUsd,
 			stock: p.stock,
+			config: p.config ?? {},
 		};
-
-		if (p.type === "giftcard") {
-			config.categoryId = p.categoryId;
-			config.cardId = p.cardId;
-		} else if (p.type === "gamekey") {
-			config.gameId = p.gameId;
-			config.keyId = p.keyId;
-		} else if (p.type === "topup") {
-			config.categoryId = p.categoryId;
-			config.gameId = p.gameId;
-		}
-
-		return config;
 	}
 }
-
-/**
- * True when two words are the same up to a couple of typos, e.g.
- * "robux" vs "roblox". The first letter and length are cheap pre-filters so
- * this stays fast when comparing hundreds of tokens against a catalog.
- */
-function isNearWord(a: string, b: string): boolean {
-	if (a === b) return true;
-	if (a[0] !== b[0]) return false;
-	if (Math.abs(a.length - b.length) > 2) return false;
-
-	const maxDistance = Math.min(a.length, b.length) <= 4 ? 1 : 2;
-	return levenshtein(a, b, maxDistance) <= maxDistance;
-}
-
-/** Levenshtein distance, aborting as soon as it cannot be <= `max`. */
-function levenshtein(a: string, b: string, max: number): number {
-	let previous: number[] = [];
-	for (let j = 0; j <= b.length; j++) previous[j] = j;
-
-	for (let i = 1; i <= a.length; i++) {
-		const current: number[] = [i];
-		let rowMin = i;
-
-		for (let j = 1; j <= b.length; j++) {
-			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-			current[j] = Math.min(
-				previous[j] + 1,
-				current[j - 1] + 1,
-				previous[j - 1] + cost,
-			);
-			if (current[j] < rowMin) rowMin = current[j];
-		}
-
-		if (rowMin > max) return max + 1;
-		previous = current;
-	}
-
-	return previous[b.length];
-}
-

@@ -8,10 +8,11 @@ export enum FulfillmentStatus {
   FAILED = 'failed',
 }
 
-export interface FazercardsOrderRecord {
+/** Order record returned by any digital product supplier. */
+export interface SupplierOrderRecord {
   orderId?: string;
   status?: string;
-  code?: string; // the digital key / code / link delivered by FazerCards
+  code?: string; // the digital key / code / link delivered by the supplier
   product?: any;
   boughtAt?: string;
 }
@@ -22,10 +23,19 @@ export interface OzonFulfillmentRecord {
   ozonStatus?: string;
   customerEmail?: string;
   fulfillmentStatus: FulfillmentStatus;
-  fazercardsOrder?: FazercardsOrderRecord;
+  /** Supplier order details (supplier-agnostic). */
+  supplierOrder?: SupplierOrderRecord;
   keyDeliveredAt?: string;
   ozonShippedAt?: string;
   error?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface FulfillmentStats {
+  total: number;
+  byStatus: Record<FulfillmentStatus, number>;
+  completed: number;
+  failed: number;
+  successRate: number;
 }

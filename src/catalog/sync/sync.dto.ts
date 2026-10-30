@@ -1,5 +1,5 @@
-import { FazercardsCatalogItem } from '../catalog.service';
-import { FazercardsProductConfig } from '../../config/product-mapping';
+import { DigitalProductConfig } from '../../config/product-mapping';
+import { SupplierType } from '../../suppliers/supplier.interface';
 
 export type MatchStrategy = 'name' | 'exact' | 'none';
 
@@ -12,22 +12,18 @@ export interface SyncOptions {
   limit?: number;
   /** If true, don't save to DB, just return what would be synced */
   dryRun?: boolean;
-  /**
-   * FazerCards catalog families to fetch. Defaults to all three.
-   * Fetching fewer families makes the sync faster.
-   */
-  sources?: CatalogSource[];
-  /**
-   * Fetch the entire FazerCards catalog instead of only the categories/games
-   * whose name appears in an Ozon product name. Slower: hundreds of extra
-   * requests, and mostly useless products for matching.
-   */
-  fullCatalog?: boolean;
+  /** Supplier type to sync from. Defaults to 'fazercards'. */
+  supplier?: SupplierType;
+  /** When syncing from supplier order history (the default), stop after this many orders. */
+  maxOrders?: number;
 }
+
+/** Configuration stored per mapping, sync-ready. */
+export interface DigitalProductConfigForSync extends DigitalProductConfig {}
 
 export interface SyncResult {
   totalOzonProducts: number;
-  totalFzrProducts: number;
+  totalSupplierProducts: number;
   synced: number;
   matched: number;
   unmatched: number;
@@ -39,18 +35,12 @@ export interface SyncResult {
 export interface SyncMappingResult {
   ozonOfferId: string;
   ozonProductName: string;
-  fazercardsConfig?: FazercardsProductConfigForSync;
+  fazercardsConfig?: DigitalProductConfigForSync;
   matchStrategy: MatchStrategy;
   matchScore?: number;
   matchedFzrProductName?: string;
   saved: boolean;
 }
-
-/**
- * The mapping config stored for a sync result. Same shape as the persisted
- * config, so the sync result and the DB record never drift apart.
- */
-export interface FazercardsProductConfigForSync extends FazercardsProductConfig {}
 
 export interface SyncError {
   ozonOfferId?: string;
@@ -58,8 +48,8 @@ export interface SyncError {
   message: string;
 }
 
-export interface FzrProductWithScore {
-  product: FazercardsCatalogItem;
+export interface ProductWithScore {
+  product: DigitalProductConfigForSync;
   score: number;
   matchedKeywords: string[];
 }

@@ -1,5 +1,6 @@
 import { Controller, Get, Query, Logger } from '@nestjs/common';
 import { FulfillmentService } from './fulfillment.service';
+import { FulfillmentStats } from './entities/fulfillment-record.entity';
 
 /**
  * Debug / admin endpoints for fulfillment.
@@ -21,5 +22,10 @@ export class FulfillmentController {
       return this.fulfillment.getRecord(postingNumber);
     }
     return this.fulfillment.listRecords();
+  }
+
+  @Get('stats')
+  getStats() {
+    return this.fulfillment.getStats();
   }
 }

@@ -9,9 +9,14 @@ import { FulfillmentStore, fulfillmentStore } from './fulfillment.store';
 import {
   OzonFulfillmentRecord,
   FulfillmentStatus,
+  FulfillmentStats,
 } from './entities/fulfillment-record.entity';
 import { OzonApiService } from '../ozon/ozon-api.service';
-import { FazerCardsBuyService } from '../fazercards/fazercards-buy.service';
+import { SupplierFactory } from '../suppliers/supplier.factory';
+import {
+  SupplierType,
+  DigitalProductConfig as SupplierDigitalProductConfig,
+} from '../suppliers/supplier.interface';
 import { MappingService } from '../catalog/mapping/mapping.service';
 
 /**
@@ -19,8 +24,8 @@ import { MappingService } from '../catalog/mapping/mapping.service';
  *
  *   Ozon webhook (NEW_POSTING / status change)
  *   → lookup Ozon posting → find offer_id
- *   → map offer_id → FazerCards product
- *   → buy key from FazerCards (idempotent by Ozon posting number)
+ *   → map offer_id → supplier product config
+ *   → buy key from the configured supplier (idempotent by Ozon posting number)
  *   → deliver key to Ozon buyer (Ozon chat message + ship posting)
  *   → mark Ozon posting shipped / delivered
  *
@@ -33,7 +38,7 @@ export class FulfillmentService implements OnModuleInit {
   constructor(
     private readonly store: FulfillmentStore,
     private readonly ozonApi: OzonApiService,
-    private readonly fzrBuy: FazerCardsBuyService,
+    private readonly supplierFactory: SupplierFactory,
     private readonly mapping: MappingService,
     private readonly configService: ConfigService,
   ) {}
@@ -102,15 +107,27 @@ export class FulfillmentService implements OnModuleInit {
     const offerId = record.ozonOfferId;
 
     if (!offerId) {
-      await this.fail(record, 'No offer_id on Ozon posting; cannot map to FazerCards product');
+      await this.fail(record, 'No offer_id on Ozon posting; cannot map to supplier product');
       return;
     }
 
-    const fazercardsConfig = await this.mapping.get(offerId);
-    if (!fazercardsConfig) {
+    const config = await this.mapping.get(offerId);
+    if (!config) {
       await this.fail(
         record,
-        `No FazerCards mapping for Ozon offer ${offerId}. Add it via POST /admin/catalog/mapping`,
+        `No supplier mapping for Ozon offer ${offerId}. Add it via POST /admin/catalog/mapping`,
+      );
+      return;
+    }
+
+    const supplierType = config.supplier ?? SupplierType.FAZERCARDS;
+    let supplier: ReturnType<SupplierFactory['get']>;
+    try {
+      supplier = this.supplierFactory.get(supplierType);
+    } catch (err) {
+      await this.fail(
+        record,
+        `No supplier registered for '${supplierType}'. Configure it first.`,
       );
       return;
     }
@@ -122,33 +139,28 @@ export class FulfillmentService implements OnModuleInit {
       this.store.set(record);
 
       this.logger.log(
-        `Buying key for posting ${postingNumber} (offer=${offerId}, type=${fazercardsConfig.type})`,
+        `Buying key for posting ${postingNumber} (offer=${offerId}, supplier=${supplierType}, type=${config.type})`,
       );
 
-      // 2. Buy key from FazerCards (idempotent by posting number)
-      const bought = await this.fzrBuy.buyKey({
-        type: fazercardsConfig.type,
-        categoryId: fazercardsConfig.categoryId,
-        cardId: fazercardsConfig.cardId,
-        gameId: fazercardsConfig.gameId,
-        keyId: fazercardsConfig.keyId,
-        quantity: fazercardsConfig.quantity ?? 1,
-        idempotencyKey: postingNumber,
-      });
+      // 2. Buy key from the configured supplier (idempotent by posting number)
+      const bought = await supplier.buyKey(
+        config as unknown as SupplierDigitalProductConfig,
+        postingNumber,
+      );
 
-      record.fazercardsOrder = {
+      record.supplierOrder = {
         orderId: bought.orderId,
         status: bought.status,
         code: bought.code,
-        product: fazercardsConfig,
-        boughtAt: new Date().toISOString(),
+        product: config,
+        boughtAt: bought.boughtAt ?? new Date().toISOString(),
       };
       record.fulfillmentStatus = FulfillmentStatus.KEY_BOUGHT;
       record.updatedAt = new Date().toISOString();
       this.store.set(record);
 
       if (!bought.code) {
-        await this.fail(record, 'FazerCards order completed but no code/key returned');
+        await this.fail(record, 'Supplier order completed but no code/key returned');
         return;
       }
 
@@ -234,5 +246,36 @@ export class FulfillmentService implements OnModuleInit {
 
   listRecords(): OzonFulfillmentRecord[] {
     return this.store.list();
+  }
+
+  getStats(): FulfillmentStats {
+    const records = this.store.list();
+    const byStatus: Record<FulfillmentStatus, number> = {
+      [FulfillmentStatus.PENDING]: 0,
+      [FulfillmentStatus.BUYING_KEY]: 0,
+      [FulfillmentStatus.KEY_BOUGHT]: 0,
+      [FulfillmentStatus.DELIVERED_TO_BUYER]: 0,
+      [FulfillmentStatus.OZON_SHIPPED]: 0,
+      [FulfillmentStatus.COMPLETED]: 0,
+      [FulfillmentStatus.FAILED]: 0,
+    };
+
+    for (const record of records) {
+      byStatus[record.fulfillmentStatus] =
+        (byStatus[record.fulfillmentStatus] ?? 0) + 1;
+    }
+
+    const completed = byStatus[FulfillmentStatus.COMPLETED] ?? 0;
+    const failed = byStatus[FulfillmentStatus.FAILED] ?? 0;
+    const terminal = completed + failed;
+    const successRate = terminal > 0 ? (completed / terminal) * 100 : 0;
+
+    return {
+      total: records.length,
+      byStatus,
+      completed,
+      failed,
+      successRate: Math.round(successRate * 100) / 100,
+    };
   }
 }

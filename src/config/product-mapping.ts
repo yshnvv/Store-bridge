@@ -1,36 +1,42 @@
-export interface FazercardsProductConfig {
-  /** 'giftcard' | 'gamekey' | 'topup' | 'steam' | 'telegram' */
-  type: 'giftcard' | 'gamekey' | 'topup' | 'steam' | 'telegram';
+import { SupplierType } from '../suppliers/supplier.interface';
 
-  /** FazerCards category id (for giftcards/topups) */
-  categoryId?: string;
+/**
+ * Configuration stored per Ozon→supplier mapping.
+ *
+ * `FazercardsProductConfig` is kept as a deprecated alias for backward
+ * compatibility with existing code / DB records.
+ */
 
-  /** FazerCards card id (for giftcards) */
-  cardId?: string;
+export interface DigitalProductConfig {
+  /** Which supplier fulfils this product. */
+  supplier: SupplierType;
 
-  /** FazerCards game id (for gamekeys/topups/steam) */
-  gameId?: string;
+  /** Product flavour within the supplier (giftcard | gamekey | topup | …). */
+  type: string;
 
-  /** FazerCards key id (for gamekeys) */
-  keyId?: string;
-
-  /** Quantity to purchase per Ozon order */
+  /** Quantity to purchase per Ozon order. */
   quantity?: number;
 
-  /** Human-readable name for logs */
+  /** Human-readable name for logs / UI. */
   label?: string;
+
+  /** Supplier-specific fields needed to buy (categoryId, cardId, gameId, keyId, …). */
+  config: Record<string, unknown>;
 
   /* ── Catalog snapshot, refreshed on every sync ── */
 
-  /** Catalog item id: `<categoryId>:<cardId>` or `<gameId>:<keyId>` */
+  /** Supplier catalog item id. */
   catalogId?: string;
 
-  /** Product name as returned by the FazerCards catalog */
+  /** Product name as returned by the supplier catalog. */
   name?: string;
 
-  /** Price per unit in USD, exactly as reported by FazerCards */
+  /** Price per unit in USD, exactly as reported by the supplier. */
   priceUsd?: string;
 
-  /** Units in stock at the time of the last sync */
+  /** Units in stock at the time of the last sync. */
   stock?: number;
 }
+
+/** @deprecated Use DigitalProductConfig instead. */
+export type FazercardsProductConfig = DigitalProductConfig;
